@@ -2,7 +2,7 @@
 // operation as an MCP tool on a stdio MCP server.
 //
 // Auth, if any, would be supplied via the *http.Client transport passed into
-// openapi.Register — this example uses an unauthenticated client.
+// renseijin.Register — this example uses an unauthenticated client.
 package main
 
 import (
@@ -13,11 +13,11 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/junkd0g/renseijin/openapi"
+	"github.com/junkd0g/renseijin"
 )
 
 func main() {
-	doc, err := openapi.LoadFile("petstore.yaml")
+	doc, err := renseijin.LoadFile("petstore.yaml")
 	if err != nil {
 		log.Fatalf("load spec: %v", err)
 	}
@@ -27,8 +27,8 @@ func main() {
 		Version: "0.1.0",
 	}, nil)
 
-	if err := openapi.Register(srv, doc,
-		openapi.WithHTTPClient(http.DefaultClient),
+	if err := renseijin.Register(srv, doc,
+		renseijin.WithHTTPClient(http.DefaultClient),
 	); err != nil {
 		log.Fatalf("register tools: %v", err)
 	}

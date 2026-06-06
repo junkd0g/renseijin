@@ -1,4 +1,4 @@
-package openapi
+package renseijin
 
 import (
 	"github.com/getkin/kin-openapi/openapi3"

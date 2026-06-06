@@ -1,10 +1,10 @@
-// Package openapi turns an OpenAPI 3.x document into MCP tools.
+// Package renseijin turns an OpenAPI 3.x document into MCP tools.
 //
 // The caller owns the *mcp.Server and the *http.Client; this package never
 // holds credentials. Auth is supplied entirely through the http.Client's
 // transport (e.g. an oauth2.Transport, a custom RoundTripper that signs
 // requests, etc.).
-package openapi
+package renseijin
 
 import (
 	"fmt"
@@ -24,7 +24,7 @@ func LoadFile(path string) (*Doc, error) {
 	loader.IsExternalRefsAllowed = true
 	t, err := loader.LoadFromFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("openapi: load %s: %w", path, err)
+		return nil, fmt.Errorf("renseijin: load %s: %w", path, err)
 	}
 	return &Doc{T: t}, nil
 }
@@ -34,7 +34,7 @@ func LoadData(data []byte) (*Doc, error) {
 	loader := openapi3.NewLoader()
 	t, err := loader.LoadFromData(data)
 	if err != nil {
-		return nil, fmt.Errorf("openapi: load from data: %w", err)
+		return nil, fmt.Errorf("renseijin: load from data: %w", err)
 	}
 	return &Doc{T: t}, nil
 }

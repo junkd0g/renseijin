@@ -1,4 +1,4 @@
-package openapi_test
+package renseijin_test
 
 import (
 	"context"
@@ -14,14 +14,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/junkd0g/renseijin/openapi"
+	"github.com/junkd0g/renseijin"
 )
 
 // petstoreDoc loads the example spec once per test that needs it.
-func petstoreDoc(t *testing.T) *openapi.Doc {
+func petstoreDoc(t *testing.T) *renseijin.Doc {
 	t.Helper()
-	specPath := filepath.Join("..", "examples", "petstore", "petstore.yaml")
-	doc, err := openapi.LoadFile(specPath)
+	specPath := filepath.Join("examples", "petstore", "petstore.yaml")
+	doc, err := renseijin.LoadFile(specPath)
 	require.NoError(t, err, "LoadFile")
 	return doc
 }
@@ -64,7 +64,7 @@ func listToolsByName(t *testing.T, cs *mcp.ClientSession) map[string]*mcp.Tool {
 // and asserts the shape callers will actually observe over the wire.
 func TestRegister_Petstore(t *testing.T) {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "petstore-test", Version: "0.0.0"}, nil)
-	require.NoError(t, openapi.Register(srv, petstoreDoc(t)))
+	require.NoError(t, renseijin.Register(srv, petstoreDoc(t)))
 
 	byName := listToolsByName(t, connectClient(t, srv))
 
@@ -87,7 +87,7 @@ func TestRegister_Petstore(t *testing.T) {
 }
 
 func TestRegister_NilServerRejected(t *testing.T) {
-	err := openapi.Register(nil, petstoreDoc(t))
+	err := renseijin.Register(nil, petstoreDoc(t))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nil *mcp.Server")
 }
@@ -95,18 +95,18 @@ func TestRegister_NilServerRejected(t *testing.T) {
 func TestRegister_NilDocRejected(t *testing.T) {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "x", Version: "0"}, nil)
 
-	err := openapi.Register(srv, nil)
+	err := renseijin.Register(srv, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nil document")
 
-	err = openapi.Register(srv, &openapi.Doc{})
+	err = renseijin.Register(srv, &renseijin.Doc{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nil document")
 }
 
 func TestRegister_WithToolNamePrefix(t *testing.T) {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "x", Version: "0"}, nil)
-	require.NoError(t, openapi.Register(srv, petstoreDoc(t), openapi.WithToolNamePrefix("pets_")))
+	require.NoError(t, renseijin.Register(srv, petstoreDoc(t), renseijin.WithToolNamePrefix("pets_")))
 
 	byName := listToolsByName(t, connectClient(t, srv))
 	assert.Contains(t, byName, "pets_listPets")
@@ -116,7 +116,7 @@ func TestRegister_WithToolNamePrefix(t *testing.T) {
 
 func TestRegister_ToolDescriptionPrefersSummary(t *testing.T) {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "x", Version: "0"}, nil)
-	require.NoError(t, openapi.Register(srv, petstoreDoc(t)))
+	require.NoError(t, renseijin.Register(srv, petstoreDoc(t)))
 
 	byName := listToolsByName(t, connectClient(t, srv))
 
@@ -146,11 +146,11 @@ paths:
 `
 
 func TestRegister_ToolDescription_JoinsSummaryAndDescription(t *testing.T) {
-	doc, err := openapi.LoadData([]byte(summaryAndDescriptionSpec))
+	doc, err := renseijin.LoadData([]byte(summaryAndDescriptionSpec))
 	require.NoError(t, err)
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "x", Version: "0"}, nil)
-	require.NoError(t, openapi.Register(srv, doc))
+	require.NoError(t, renseijin.Register(srv, doc))
 
 	byName := listToolsByName(t, connectClient(t, srv))
 
@@ -175,9 +175,9 @@ func TestRegister_EndToEnd_CallTool_ForwardsToBackend(t *testing.T) {
 	t.Cleanup(backend.Close)
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "x", Version: "0"}, nil)
-	require.NoError(t, openapi.Register(srv, petstoreDoc(t),
-		openapi.WithHTTPClient(backend.Client()),
-		openapi.WithBaseURL(backend.URL),
+	require.NoError(t, renseijin.Register(srv, petstoreDoc(t),
+		renseijin.WithHTTPClient(backend.Client()),
+		renseijin.WithBaseURL(backend.URL),
 	))
 
 	cs := connectClient(t, srv)
@@ -203,9 +203,9 @@ func TestRegister_WithBaseURL_OverridesSpecServerURL(t *testing.T) {
 	t.Cleanup(backend.Close)
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "x", Version: "0"}, nil)
-	require.NoError(t, openapi.Register(srv, petstoreDoc(t),
-		openapi.WithHTTPClient(backend.Client()),
-		openapi.WithBaseURL(backend.URL),
+	require.NoError(t, renseijin.Register(srv, petstoreDoc(t),
+		renseijin.WithHTTPClient(backend.Client()),
+		renseijin.WithBaseURL(backend.URL),
 	))
 
 	cs := connectClient(t, srv)
@@ -233,10 +233,10 @@ paths:
       operationId: ping
       responses: {"200": {description: ok}}
 `
-	doc, err := openapi.LoadData([]byte(noServers))
+	doc, err := renseijin.LoadData([]byte(noServers))
 	require.NoError(t, err)
 	srv := mcp.NewServer(&mcp.Implementation{Name: "x", Version: "0"}, nil)
-	require.NoError(t, openapi.Register(srv, doc))
+	require.NoError(t, renseijin.Register(srv, doc))
 }
 
 // requiredHas reports whether the JSON-Schema-style "required" list of schema

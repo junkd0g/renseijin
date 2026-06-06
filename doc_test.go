@@ -1,4 +1,4 @@
-package openapi_test
+package renseijin_test
 
 import (
 	"path/filepath"
@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/junkd0g/renseijin/openapi"
+	"github.com/junkd0g/renseijin"
 )
 
 const minimalSpec = `openapi: 3.0.3
@@ -25,34 +25,34 @@ paths:
 `
 
 func TestLoadFile_Success(t *testing.T) {
-	d, err := openapi.LoadFile(filepath.Join("..", "examples", "petstore", "petstore.yaml"))
+	d, err := renseijin.LoadFile(filepath.Join("examples", "petstore", "petstore.yaml"))
 	require.NoError(t, err)
 	require.NotNil(t, d)
 	assert.NotNil(t, d.T)
 }
 
 func TestLoadFile_NotFound(t *testing.T) {
-	_, err := openapi.LoadFile(filepath.Join("testdata", "this-file-does-not-exist.yaml"))
+	_, err := renseijin.LoadFile(filepath.Join("testdata", "this-file-does-not-exist.yaml"))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openapi: load")
+	assert.Contains(t, err.Error(), "renseijin: load")
 }
 
 func TestLoadData_Success(t *testing.T) {
-	d, err := openapi.LoadData([]byte(minimalSpec))
+	d, err := renseijin.LoadData([]byte(minimalSpec))
 	require.NoError(t, err)
 	require.NotNil(t, d)
 	assert.NotNil(t, d.T)
 }
 
 func TestLoadData_BadSpec(t *testing.T) {
-	_, err := openapi.LoadData([]byte("\x00not-a-spec\x01"))
+	_, err := renseijin.LoadData([]byte("\x00not-a-spec\x01"))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openapi: load from data")
+	assert.Contains(t, err.Error(), "renseijin: load from data")
 }
 
 func TestFromT_Wraps(t *testing.T) {
 	in := &openapi3.T{}
-	d := openapi.FromT(in)
+	d := renseijin.FromT(in)
 	require.NotNil(t, d)
 	assert.Same(t, in, d.T)
 }

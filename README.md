@@ -97,11 +97,11 @@ import (
 
     "github.com/modelcontextprotocol/go-sdk/mcp"
 
-    "github.com/junkd0g/renseijin/openapi"
+    "github.com/junkd0g/renseijin"
 )
 
 func main() {
-    doc, err := openapi.LoadFile("petstore.yaml")
+    doc, err := renseijin.LoadFile("petstore.yaml")
     if err != nil {
         log.Fatal(err)
     }
@@ -111,8 +111,8 @@ func main() {
         Version: "0.1.0",
     }, nil)
 
-    if err := openapi.Register(srv, doc,
-        openapi.WithHTTPClient(http.DefaultClient),
+    if err := renseijin.Register(srv, doc,
+        renseijin.WithHTTPClient(http.DefaultClient),
     ); err != nil {
         log.Fatal(err)
     }
@@ -137,7 +137,7 @@ client := &http.Client{
     },
 }
 
-openapi.Register(srv, doc, openapi.WithHTTPClient(client))
+renseijin.Register(srv, doc, renseijin.WithHTTPClient(client))
 ```
 
 ```go
@@ -159,9 +159,9 @@ When the spec's `servers[].url` is wrong for your environment (sandbox,
 staging, local mock), override it:
 
 ```go
-openapi.Register(srv, doc,
-    openapi.WithHTTPClient(client),
-    openapi.WithBaseURL("https://sandbox.example.com/v1"),
+renseijin.Register(srv, doc,
+    renseijin.WithHTTPClient(client),
+    renseijin.WithBaseURL("https://sandbox.example.com/v1"),
 )
 ```
 
@@ -170,8 +170,8 @@ openapi.Register(srv, doc,
 When stacking several specs on one server, prefix tool names:
 
 ```go
-openapi.Register(srv, petstoreDoc, openapi.WithToolNamePrefix("pets_"))
-openapi.Register(srv, billingDoc,  openapi.WithToolNamePrefix("billing_"))
+renseijin.Register(srv, petstoreDoc, renseijin.WithToolNamePrefix("pets_"))
+renseijin.Register(srv, billingDoc,  renseijin.WithToolNamePrefix("billing_"))
 ```
 
 ---
@@ -208,14 +208,13 @@ Example, for `GET /pets/{petId}`:
 
 ```
 go.mod
-openapi/
-  doc.go         -- LoadFile / LoadData / FromT
-  options.go     -- functional options
-  operation.go   -- spec walk, parameter merging, name derivation
-  schema.go      -- *openapi3.SchemaRef → map[string]any JSON Schema
-  handler.go     -- mcp.ToolHandler → outbound *http.Request
-  register.go    -- public Register entry point
-  register_test.go
+doc.go         -- LoadFile / LoadData / FromT
+options.go     -- functional options
+operation.go   -- spec walk, parameter merging, name derivation
+schema.go      -- *openapi3.SchemaRef → map[string]any JSON Schema
+handler.go     -- mcp.ToolHandler → outbound *http.Request
+register.go    -- public Register entry point
+*_test.go      -- per-source white/black-box tests (testify)
 examples/
   petstore/
     main.go
@@ -234,9 +233,9 @@ gofmt -l .
 go test ./...
 ```
 
-The unit test in `openapi/` loads `examples/petstore/petstore.yaml`,
-registers it onto an in-memory MCP server, then asks an in-memory client to
-list the tools — so it exercises the same path callers will use over the
+The test suite loads `examples/petstore/petstore.yaml`, registers it onto
+an in-memory MCP server, then asks an in-memory client to list and call
+tools — so it exercises the same path callers will use over the
 wire.
 
 ---

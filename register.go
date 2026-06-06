@@ -1,4 +1,4 @@
-package openapi
+package renseijin
 
 import (
 	"fmt"
@@ -14,10 +14,10 @@ import (
 // http.Client passed via WithHTTPClient; this package never holds credentials.
 func Register(srv *mcp.Server, doc *Doc, opts ...Option) error {
 	if srv == nil {
-		return fmt.Errorf("openapi.Register: nil *mcp.Server")
+		return fmt.Errorf("renseijin.Register: nil *mcp.Server")
 	}
 	if doc == nil || doc.T == nil {
-		return fmt.Errorf("openapi.Register: nil document")
+		return fmt.Errorf("renseijin.Register: nil document")
 	}
 	cfg := newConfig(opts)
 
