@@ -8,7 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - GitHub Actions CI (`.github/workflows/ci.yml`) running `gofmt`, `go vet`,
-  `go test -race`, `golangci-lint`, and `govulncheck` on Go 1.25.
+  `go test -race`, `golangci-lint` (v2.12.2 via `golangci-lint-action@v8`,
+  required for Go 1.25 targets), and `govulncheck` on Go 1.25.
 - `.gitignore` covering Go build artifacts, coverage profiles, and macOS metadata.
 - `LICENSE` file (MIT).
 - `CHANGELOG.md` following Keep a Changelog format.
