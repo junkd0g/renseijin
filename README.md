@@ -1,9 +1,5 @@
 # renseijin
 
-> **Status: under construction.** This is a work-in-progress experiment. The
-> public API will change, edges are rough, and many parts of the OpenAPI 3.x
-> surface are not yet handled. Do not depend on this in production.
-
 A small Go library that turns an [OpenAPI 3.x](https://spec.openapis.org/oas/v3.1.0)
 document into a set of [Model Context Protocol](https://modelcontextprotocol.io)
 tools — one MCP tool per OpenAPI operation. You bring an `*mcp.Server` and an
