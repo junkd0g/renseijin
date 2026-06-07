@@ -43,7 +43,7 @@ func makeHandler(op operation, baseURL string, cfg *config) mcp.ToolHandler {
 		if err != nil {
 			return errResult(fmt.Errorf("http: %w", err)), nil
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {

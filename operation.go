@@ -113,13 +113,11 @@ func (op operation) toolName(prefix string) string {
 func sanitize(path string) string {
 	var b strings.Builder
 	for _, r := range path {
-		switch {
-		case r == '/':
+		switch r {
+		case '/', '-', '.':
 			b.WriteByte('_')
-		case r == '{' || r == '}':
+		case '{', '}':
 			// drop braces; the variable name itself is kept
-		case r == '-' || r == '.':
-			b.WriteByte('_')
 		default:
 			b.WriteRune(r)
 		}
