@@ -2,11 +2,16 @@ package renseijin
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -242,7 +247,7 @@ func TestMakeHandler_ForwardsRequestAndFormatsSuccess(t *testing.T) {
 	t.Cleanup(backend.Close)
 
 	op := loadOp(t, "getPet")
-	h := makeHandler(op, backend.URL, backend.Client())
+	h := makeHandler(op, backend.URL, &config{httpClient: backend.Client()})
 
 	res := callRaw(t, h, map[string]any{"petId": "7"})
 
@@ -262,7 +267,7 @@ func TestMakeHandler_4xxMarksResultAsError(t *testing.T) {
 	t.Cleanup(backend.Close)
 
 	op := loadOp(t, "getPet")
-	h := makeHandler(op, backend.URL, backend.Client())
+	h := makeHandler(op, backend.URL, &config{httpClient: backend.Client()})
 
 	res := callRaw(t, h, map[string]any{"petId": "x"})
 
@@ -272,7 +277,7 @@ func TestMakeHandler_4xxMarksResultAsError(t *testing.T) {
 
 func TestMakeHandler_InvalidJSONArgsErrorsCleanly(t *testing.T) {
 	op := loadOp(t, "getPet")
-	h := makeHandler(op, "http://example.invalid", http.DefaultClient)
+	h := makeHandler(op, "http://example.invalid", &config{httpClient: http.DefaultClient})
 
 	res, err := h(context.Background(), &mcp.CallToolRequest{
 		Params: &mcp.CallToolParamsRaw{Arguments: json.RawMessage(`{not json`)},
@@ -292,7 +297,7 @@ func TestMakeHandler_NoArguments_StillRunsForOperationsWithoutRequiredParams(t *
 
 	// /pets POST has a required body — verify a missing-required path:
 	op := loadOp(t, "createPet")
-	h := makeHandler(op, backend.URL, backend.Client())
+	h := makeHandler(op, backend.URL, &config{httpClient: backend.Client()})
 
 	res, err := h(context.Background(), &mcp.CallToolRequest{
 		Params: &mcp.CallToolParamsRaw{Arguments: nil},
@@ -313,7 +318,7 @@ func (e *erroringTransport) RoundTrip(*http.Request) (*http.Response, error) { r
 func TestMakeHandler_TransportErrorSurfacesAsToolError(t *testing.T) {
 	op := loadOp(t, "getPet")
 	cli := &http.Client{Transport: &erroringTransport{err: errors.New("boom")}}
-	h := makeHandler(op, "http://example.invalid", cli)
+	h := makeHandler(op, "http://example.invalid", &config{httpClient: cli})
 
 	res := callRaw(t, h, map[string]any{"petId": "1"})
 
@@ -337,7 +342,7 @@ func TestMakeHandler_AuthLivesInCallerTransport(t *testing.T) {
 	}}
 
 	op := loadOp(t, "getPet")
-	h := makeHandler(op, backend.URL, cli)
+	h := makeHandler(op, backend.URL, &config{httpClient: cli})
 
 	res := callRaw(t, h, map[string]any{"petId": "1"})
 	require.False(t, res.IsError)
@@ -357,4 +362,178 @@ func (a *authTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		return http.DefaultTransport.RoundTrip(r)
 	}
 	return a.base.RoundTrip(r)
+}
+
+// ---- truncateBody -----------------------------------------------------
+
+func TestTruncateBody_NoCapPassesThrough(t *testing.T) {
+	assert.Equal(t, "hello world", truncateBody([]byte("hello world"), 0))
+}
+
+func TestTruncateBody_UnderCapPassesThrough(t *testing.T) {
+	assert.Equal(t, "hello", truncateBody([]byte("hello"), 100))
+}
+
+func TestTruncateBody_OverCapIsCutAndMarked(t *testing.T) {
+	got := truncateBody([]byte("0123456789"), 4)
+	assert.True(t, strings.HasPrefix(got, "0123"))
+	assert.Contains(t, got, "truncated, 4 of 10 bytes shown")
+}
+
+func TestMakeHandler_TruncatesLargeResponse(t *testing.T) {
+	// A backend that returns 2000 bytes of 'A' — the handler should cap the
+	// body it surfaces to the LLM at 100 bytes and stamp a truncation marker.
+	big := strings.Repeat("A", 2000)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, big)
+	}))
+	t.Cleanup(backend.Close)
+
+	op := loadOp(t, "getPet")
+	h := makeHandler(op, backend.URL, &config{httpClient: backend.Client(), maxResponseBytes: 100})
+
+	res := callRaw(t, h, map[string]any{"petId": "1"})
+	text := textOf(t, res)
+	assert.Contains(t, text, "truncated, 100 of 2000 bytes shown")
+	assert.NotContains(t, text, strings.Repeat("A", 200), "truncation must actually drop bytes, not just append a notice")
+}
+
+func TestMakeHandler_NoTruncation_WhenMaxIsZero(t *testing.T) {
+	big := strings.Repeat("B", 5000)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, big)
+	}))
+	t.Cleanup(backend.Close)
+
+	op := loadOp(t, "getPet")
+	h := makeHandler(op, backend.URL, &config{httpClient: backend.Client(), maxResponseBytes: 0})
+
+	res := callRaw(t, h, map[string]any{"petId": "1"})
+	text := textOf(t, res)
+	assert.Contains(t, text, big, "max=0 must disable truncation entirely")
+	assert.NotContains(t, text, "truncated,")
+}
+
+// ---- encodeRequestBody ------------------------------------------------
+
+func TestEncodeRequestBody_JSON_DefaultMarshal(t *testing.T) {
+	r, ct, err := encodeRequestBody(map[string]any{"name": "rex"}, "application/json")
+	require.NoError(t, err)
+	assert.Equal(t, "application/json", ct)
+	buf, _ := io.ReadAll(r)
+	assert.JSONEq(t, `{"name":"rex"}`, string(buf))
+}
+
+func TestEncodeRequestBody_FormURLEncoded(t *testing.T) {
+	r, ct, err := encodeRequestBody(map[string]any{
+		"name":   "rex",
+		"age":    float64(7), // JSON numbers always decode as float64
+		"vip":    true,
+		"tags":   []any{"a", "b"}, // non-scalar falls through stringify → JSON
+		"nilkey": nil,
+	}, "application/x-www-form-urlencoded")
+	require.NoError(t, err)
+	assert.Equal(t, "application/x-www-form-urlencoded", ct)
+
+	buf, _ := io.ReadAll(r)
+	q, parseErr := url.ParseQuery(string(buf))
+	require.NoError(t, parseErr)
+	assert.Equal(t, "rex", q.Get("name"))
+	assert.Equal(t, "7", q.Get("age"))
+	assert.Equal(t, "true", q.Get("vip"))
+	assert.Equal(t, `["a","b"]`, q.Get("tags"))
+	assert.Equal(t, "", q.Get("nilkey"))
+}
+
+func TestEncodeRequestBody_FormURLEncoded_RejectsNonObject(t *testing.T) {
+	_, _, err := encodeRequestBody("not-an-object", "application/x-www-form-urlencoded")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a JSON object")
+}
+
+func TestEncodeRequestBody_Multipart_Fields(t *testing.T) {
+	r, ct, err := encodeRequestBody(map[string]any{
+		"name": "rex",
+		"age":  float64(7),
+	}, "multipart/form-data")
+	require.NoError(t, err)
+
+	// FormDataContentType appends a boundary; assert prefix only.
+	assert.True(t, strings.HasPrefix(ct, "multipart/form-data; boundary="), "got %q", ct)
+	_, params, parseErr := mime.ParseMediaType(ct)
+	require.NoError(t, parseErr)
+	boundary := params["boundary"]
+	require.NotEmpty(t, boundary)
+
+	mr := multipart.NewReader(r, boundary)
+	seen := map[string]string{}
+	for {
+		p, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		require.NoError(t, err)
+		buf, _ := io.ReadAll(p)
+		seen[p.FormName()] = string(buf)
+	}
+	assert.Equal(t, "rex", seen["name"])
+	assert.Equal(t, "7", seen["age"])
+}
+
+func TestEncodeRequestBody_Multipart_FileField(t *testing.T) {
+	const fileBody = "hello bytes"
+	enc := base64.StdEncoding.EncodeToString([]byte(fileBody))
+	r, ct, err := encodeRequestBody(map[string]any{
+		"label": "first",
+		"file": map[string]any{
+			"filename":       "note.txt",
+			"content_base64": enc,
+		},
+	}, "multipart/form-data")
+	require.NoError(t, err)
+
+	_, params, _ := mime.ParseMediaType(ct)
+	mr := multipart.NewReader(r, params["boundary"])
+
+	var fileName, fileContent, label string
+	for {
+		p, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		require.NoError(t, err)
+		switch p.FormName() {
+		case "label":
+			b, _ := io.ReadAll(p)
+			label = string(b)
+		case "file":
+			fileName = p.FileName()
+			b, _ := io.ReadAll(p)
+			fileContent = string(b)
+		}
+	}
+	assert.Equal(t, "first", label)
+	assert.Equal(t, "note.txt", fileName)
+	assert.Equal(t, fileBody, fileContent)
+}
+
+func TestEncodeRequestBody_Multipart_InvalidBase64Errors(t *testing.T) {
+	_, _, err := encodeRequestBody(map[string]any{
+		"file": map[string]any{
+			"filename":       "x.bin",
+			"content_base64": "!!! not base64 !!!",
+		},
+	}, "multipart/form-data")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid content_base64")
+}
+
+func TestEncodeRequestBody_UnknownMediaType_FallsBackToJSON(t *testing.T) {
+	// XML, octet-stream, etc. — the library still JSON-marshals so existing
+	// specs that relied on the historic behavior don't break.
+	r, ct, err := encodeRequestBody(map[string]any{"k": "v"}, "application/xml")
+	require.NoError(t, err)
+	assert.Equal(t, "application/xml", ct, "Content-Type must mirror the spec, not be rewritten to application/json")
+	buf, _ := io.ReadAll(r)
+	assert.JSONEq(t, `{"k":"v"}`, string(buf))
 }

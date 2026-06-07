@@ -12,6 +12,8 @@ func TestNewConfig_Defaults(t *testing.T) {
 	assert.Same(t, http.DefaultClient, cfg.httpClient)
 	assert.Empty(t, cfg.baseURL)
 	assert.Empty(t, cfg.namePrefix)
+	assert.Nil(t, cfg.serverVariables)
+	assert.Equal(t, DefaultMaxResponseBytes, cfg.maxResponseBytes)
 }
 
 func TestWithHTTPClient_NilFallsBackToDefault(t *testing.T) {
@@ -41,4 +43,30 @@ func TestOptions_LastWriteWins(t *testing.T) {
 		WithBaseURL("https://second.example"),
 	})
 	assert.Equal(t, "https://second.example", cfg.baseURL)
+}
+
+func TestWithServerVariables_Merges(t *testing.T) {
+	cfg := newConfig([]Option{
+		WithServerVariables(map[string]string{"region": "us-east-1", "version": "v1"}),
+		WithServerVariables(map[string]string{"region": "eu-west-1"}), // overrides
+	})
+	assert.Equal(t, map[string]string{"region": "eu-west-1", "version": "v1"}, cfg.serverVariables)
+}
+
+func TestWithServerVariables_NilMap_DoesNotCrash(t *testing.T) {
+	cfg := newConfig([]Option{WithServerVariables(nil)})
+	// Calling with nil must still initialize an empty map so later
+	// per-key overrides have somewhere to land.
+	assert.NotNil(t, cfg.serverVariables)
+	assert.Empty(t, cfg.serverVariables)
+}
+
+func TestWithMaxResponseBytes_OverridesDefault(t *testing.T) {
+	cfg := newConfig([]Option{WithMaxResponseBytes(1024)})
+	assert.Equal(t, 1024, cfg.maxResponseBytes)
+}
+
+func TestWithMaxResponseBytes_ZeroDisablesTruncation(t *testing.T) {
+	cfg := newConfig([]Option{WithMaxResponseBytes(0)})
+	assert.Equal(t, 0, cfg.maxResponseBytes)
 }

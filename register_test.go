@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -219,6 +220,130 @@ func TestRegister_WithBaseURL_OverridesSpecServerURL(t *testing.T) {
 	// Without WithBaseURL the requests would land on petstore.example.com.
 	assert.NotEqual(t, "petstore.example.com", seenHost)
 	assert.NotEmpty(t, seenHost)
+}
+
+const serverVarsSpec = `openapi: 3.0.3
+info:
+  title: sv
+  version: "1.0"
+servers:
+  - url: https://{region}.api.example.com/{version}
+    variables:
+      region:  {default: us-east-1}
+      version: {default: v1}
+paths:
+  /ping:
+    get:
+      operationId: ping
+      responses: {"200": {description: ok}}
+`
+
+func TestRegister_ServerVariables_DefaultsAreSubstituted(t *testing.T) {
+	// When neither WithBaseURL nor WithServerVariables is supplied, the
+	// spec's defaults must fill the placeholders — and Register must
+	// succeed (i.e. no "unresolved variable" error).
+	doc, err := renseijin.LoadData([]byte(serverVarsSpec))
+	require.NoError(t, err)
+	srv := mcp.NewServer(&mcp.Implementation{Name: "x", Version: "0"}, nil)
+	require.NoError(t, renseijin.Register(srv, doc))
+}
+
+func TestRegister_ServerVariables_OverridesWin(t *testing.T) {
+	// The override host must reach the wire; the spec default (us-east-1)
+	// must not.
+	var seenHost string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenHost = r.Host
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(backend.Close)
+
+	// Use a spec that templates the host but resolves through our test
+	// backend's actual host. We swap the URL after parsing by setting
+	// WithBaseURL — but that bypasses the variable code path. Instead,
+	// route through a custom transport that rewrites the request URL to
+	// the backend; that way we exercise the substitution logic end-to-end.
+	doc, err := renseijin.LoadData([]byte(serverVarsSpec))
+	require.NoError(t, err)
+	srv := mcp.NewServer(&mcp.Implementation{Name: "x", Version: "0"}, nil)
+	cli := &http.Client{Transport: rewriteToTransport{to: backend.URL, base: backend.Client().Transport}}
+	require.NoError(t, renseijin.Register(srv, doc,
+		renseijin.WithServerVariables(map[string]string{"region": "eu-west-1"}),
+		renseijin.WithHTTPClient(cli),
+	))
+
+	cs := connectClient(t, srv)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "ping"})
+	require.NoError(t, err)
+	assert.False(t, res.IsError, "tool result: %+v", res)
+	assert.NotEmpty(t, seenHost, "backend was not called")
+}
+
+func TestRegister_ServerVariables_UnresolvedFailsAtRegister(t *testing.T) {
+	// A spec that templates {region} but declares no variable for it must
+	// fail at Register, not silently produce tools that always 500.
+	const spec = `openapi: 3.0.3
+info: {title: x, version: "1.0"}
+servers:
+  - url: https://{region}.example.com
+paths:
+  /ping:
+    get:
+      operationId: ping
+      responses: {"200": {description: ok}}
+`
+	doc, err := renseijin.LoadData([]byte(spec))
+	require.NoError(t, err)
+	srv := mcp.NewServer(&mcp.Implementation{Name: "x", Version: "0"}, nil)
+	err = renseijin.Register(srv, doc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unresolved variable")
+	assert.Contains(t, err.Error(), "region")
+}
+
+func TestRegister_WithBaseURL_SkipsServerVariableResolution(t *testing.T) {
+	// WithBaseURL is treated as the literal final URL; if a spec has
+	// unresolved variables but the caller overrides with WithBaseURL,
+	// Register should succeed.
+	const spec = `openapi: 3.0.3
+info: {title: x, version: "1.0"}
+servers:
+  - url: https://{undeclared}.example.com
+paths:
+  /ping:
+    get:
+      operationId: ping
+      responses: {"200": {description: ok}}
+`
+	doc, err := renseijin.LoadData([]byte(spec))
+	require.NoError(t, err)
+	srv := mcp.NewServer(&mcp.Implementation{Name: "x", Version: "0"}, nil)
+	require.NoError(t, renseijin.Register(srv, doc, renseijin.WithBaseURL("https://override.example.com")))
+}
+
+// rewriteToTransport forwards every request to a fixed scheme+host,
+// preserving the original path & query. We use it to route templated
+// URLs at an httptest backend without baking the backend host into the
+// spec.
+type rewriteToTransport struct {
+	to   string
+	base http.RoundTripper
+}
+
+func (r rewriteToTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	target, err := url.Parse(r.to)
+	if err != nil {
+		return nil, err
+	}
+	req = req.Clone(req.Context())
+	req.URL.Scheme = target.Scheme
+	req.URL.Host = target.Host
+	req.Host = target.Host
+	tx := r.base
+	if tx == nil {
+		tx = http.DefaultTransport
+	}
+	return tx.RoundTrip(req)
 }
 
 func TestRegister_NoServerURL_FallsBackToEmptyBase(t *testing.T) {
