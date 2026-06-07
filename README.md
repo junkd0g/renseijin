@@ -56,7 +56,7 @@ Design intent:
 | Security schemes / `securityRequirements` | inspected for documentation only; not enforced |
 | Response schema validation        | not yet      |
 | Pagination helpers                | not yet      |
-| Convenience entry point           | `renseijin.Serve(ctx, doc, opts...)` and the `cmd/renseijin` binary |
+| Convenience entry point           | `renseijin.Serve(ctx, doc, opts...)` |
 
 If something on this list lands in front of your use case, expect to read
 source and patch.
@@ -143,21 +143,6 @@ err := renseijin.Serve(ctx, doc,
 
 For multi-spec composition or custom server hooks, keep using `Register` —
 `Serve` is intentionally opinionated (defaults to stdio, single server).
-
-### CLI: `cmd/renseijin`
-
-A small binary is included so the project is demoable without writing any
-Go:
-
-```sh
-go run ./cmd/renseijin --spec examples/petstore/petstore.yaml
-go run ./cmd/renseijin --spec petstore.yaml --transport http --addr :8080
-go run ./cmd/renseijin --spec petstore.yaml --base-url https://sandbox.example.com/v1
-```
-
-The CLI uses `http.DefaultClient` and **does not load credentials of its
-own** — if your upstream API needs a bearer token, import the library and
-supply your own `*http.Client`.
 
 ### Server-variable substitution
 
@@ -292,8 +277,6 @@ handler.go     -- mcp.ToolHandler → outbound *http.Request, body encoding,
 register.go    -- public Register entry point, server-variable resolution
 serve.go       -- Serve convenience helper (NewServer + Register + Run)
 *_test.go      -- per-source white/black-box tests (testify)
-cmd/
-  renseijin/   -- CLI: serve a spec over stdio or streamable HTTP
 examples/
   petstore/
     main.go
