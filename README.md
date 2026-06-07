@@ -1,5 +1,9 @@
 # renseijin
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/junkd0g/renseijin)](https://goreportcard.com/report/github.com/junkd0g/renseijin)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![GoDoc](https://pkg.go.dev/badge/github.com/junkd0g/renseijin.svg)](https://pkg.go.dev/github.com/junkd0g/renseijin)
+
 A small Go library that turns an [OpenAPI 3.x](https://spec.openapis.org/oas/v3.1.0)
 document into a set of [Model Context Protocol](https://modelcontextprotocol.io)
 tools — one MCP tool per OpenAPI operation. You bring an `*mcp.Server` and an
@@ -306,7 +310,19 @@ transmutes an OpenAPI document into MCP tools.
 
 ---
 
+## Contributing
+
+1. Fork the repository.
+2. Create a feature branch (`git checkout -b feature/your-feature`).
+3. Commit your changes.
+4. Push to the branch (`git push origin feature/your-feature`).
+5. Open a pull request.
+
 ## License
 
-Not chosen yet. Until that changes, treat the code as "all rights reserved" —
-fine for evaluation, not for redistribution.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE)
+file for details.
+
+## Author
+
+Iordanis Paschalidis — [@junkd0g](https://github.com/junkd0g)
