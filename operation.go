@@ -6,15 +6,19 @@ import (
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // operation is everything we need to build one MCP tool and dispatch one HTTP
 // call. It is internal to the package — callers never see this type.
 type operation struct {
-	method     string
-	pathTmpl   string              // e.g. "/pets/{petId}"
-	op         *openapi3.Operation // op-level metadata
-	parameters openapi3.Parameters // path-level + op-level, deduped
+	method         string
+	pathTmpl       string              // e.g. "/pets/{petId}"
+	op             *openapi3.Operation // op-level metadata
+	parameters     openapi3.Parameters // path-level + op-level, deduped
+	servers        openapi3.Servers
+	contentType    string
+	inputValidator *jsonschema.Schema
 }
 
 // httpMethods is the ordered set of HTTP methods kin-openapi exposes on
@@ -59,15 +63,74 @@ func collectOperations(t *openapi3.T) []operation {
 			if op == nil {
 				continue
 			}
+			servers := t.Servers
+			if len(pi.Servers) > 0 {
+				servers = pi.Servers
+			}
+			if op.Servers != nil && len(*op.Servers) > 0 {
+				servers = *op.Servers
+			}
+			contentType := ""
+			if op.RequestBody != nil && op.RequestBody.Value != nil {
+				contentType = pickRequestContentType(op.RequestBody.Value)
+			}
 			out = append(out, operation{
-				method:     hm.name,
-				pathTmpl:   path,
-				op:         op,
-				parameters: mergeParameters(pi.Parameters, op.Parameters),
+				method:      hm.name,
+				pathTmpl:    path,
+				op:          op,
+				parameters:  mergeParameters(pi.Parameters, op.Parameters),
+				servers:     servers,
+				contentType: contentType,
 			})
 		}
 	}
 	return out
+}
+
+// parameterNames keeps ordinary names intact and allocates aliases for names
+// shared by different locations or reserved for the request body. All original
+// names are reserved first, so generated aliases cannot hide another parameter.
+func (op operation) parameterNames() map[*openapi3.Parameter]string {
+	counts := map[string]int{}
+	used := map[string]bool{}
+	if op.op.RequestBody != nil {
+		counts["body"]++
+		used["body"] = true
+	}
+	for _, ref := range op.parameters {
+		if ref != nil && ref.Value != nil {
+			counts[ref.Value.Name]++
+			used[ref.Value.Name] = true
+		}
+	}
+	out := map[*openapi3.Parameter]string{}
+	for _, ref := range op.parameters {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		p := ref.Value
+		name := p.Name
+		if counts[name] > 1 {
+			base := p.In + "." + p.Name
+			name = base
+			for used[name] {
+				name += "_"
+			}
+			used[name] = true
+		}
+		out[p] = name
+	}
+	return out
+}
+
+func (op operation) requestContentType() string {
+	if op.contentType != "" {
+		return op.contentType
+	}
+	if op.op.RequestBody != nil {
+		return pickRequestContentType(op.op.RequestBody.Value)
+	}
+	return "application/json"
 }
 
 // mergeParameters combines path-item-level and operation-level parameters.

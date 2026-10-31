@@ -47,7 +47,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: stable
+          # Keep the analyzed toolchain compatible with the pinned linter.
+          go-version: '1.25'
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v8

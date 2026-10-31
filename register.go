@@ -21,34 +21,57 @@ func Register(srv *mcp.Server, doc *Doc, opts ...Option) error {
 		return fmt.Errorf("renseijin.Register: nil document")
 	}
 	cfg := newConfig(opts)
-
-	// WithBaseURL is treated as the literal final URL and skips spec-side
-	// server-variable resolution. Anything else means we walk the spec's
-	// first server and substitute {var} placeholders before mounting any
-	// tools — failing at startup if a placeholder is unresolvable beats
-	// failing on every tool call with a DNS error.
-	baseURL := cfg.baseURL
-	if baseURL == "" {
-		resolved, err := resolveServerURL(doc, cfg.serverVariables)
-		if err != nil {
-			return fmt.Errorf("renseijin.Register: %w", err)
-		}
-		baseURL = resolved
+	if cfg.maxResponseBytes < 0 {
+		return fmt.Errorf("renseijin.Register: max response bytes must be non-negative")
 	}
-
+	// Prepare the entire batch before mutating the caller's server.
+	type preparedTool struct {
+		tool    *mcp.Tool
+		handler mcp.ToolHandler
+	}
+	var prepared []preparedTool
+	names := map[string]string{}
 	for _, op := range collectOperations(doc.T) {
 		name := op.toolName(cfg.namePrefix)
+		if prev, exists := names[name]; exists {
+			return fmt.Errorf("renseijin.Register: duplicate tool name %q for %s and %s %s; assign unique operationIds", name, prev, op.method, op.pathTmpl)
+		}
+		names[name] = op.method + " " + op.pathTmpl
+		baseURL := cfg.baseURL
+		if baseURL == "" {
+			var err error
+			baseURL, err = resolveServers(op.servers, cfg.serverVariables)
+			if err != nil {
+				return fmt.Errorf("renseijin.Register: %s: %w", name, err)
+			}
+		}
+		for _, ref := range op.parameters {
+			if ref != nil && ref.Value != nil {
+				if err := checkParameterEncoding(ref.Value); err != nil {
+					return fmt.Errorf("renseijin.Register: %s: %w", name, err)
+				}
+			}
+		}
+		schema := buildInputSchema(op)
+		validator, err := compileInputSchema(schema)
+		if err != nil {
+			return fmt.Errorf("renseijin.Register: %s input schema: %w", name, err)
+		}
+		op.inputValidator = validator
 		tool := &mcp.Tool{
 			Name:        name,
 			Description: describeOperation(op),
-			InputSchema: buildInputSchema(op),
+			InputSchema: schema,
 		}
-		srv.AddTool(tool, makeHandler(op, baseURL, cfg))
+		prepared = append(prepared, preparedTool{tool, makeHandler(op, baseURL, cfg)})
+	}
+	for _, p := range prepared {
+		srv.AddTool(p.tool, p.handler)
 	}
 	return nil
 }
 
-// resolveServerURL picks the first non-empty entry from doc.T.Servers and
+// resolveServers picks the first non-empty entry from the selected servers and
 // substitutes any {var} placeholders in its URL.
 //
 // Resolution order per placeholder:
@@ -58,12 +81,9 @@ func Register(srv *mcp.Server, doc *Doc, opts ...Option) error {
 // Returns an error listing any placeholders that could not be resolved. We
 // fail loudly rather than silently letting "{region}.example.com" reach the
 // wire — every tool call would then fail with a confusing DNS error.
-func resolveServerURL(doc *Doc, overrides map[string]string) (string, error) {
-	if doc == nil || doc.T == nil {
-		return "", nil
-	}
+func resolveServers(servers openapi3.Servers, overrides map[string]string) (string, error) {
 	var srv *openapi3.Server
-	for _, s := range doc.T.Servers {
+	for _, s := range servers {
 		if s != nil && s.URL != "" {
 			srv = s
 			break
@@ -81,7 +101,7 @@ func resolveServerURL(doc *Doc, overrides map[string]string) (string, error) {
 			resolved = strings.ReplaceAll(resolved, placeholder, v)
 			continue
 		}
-		if sv, ok := srv.Variables[name]; ok && sv != nil && sv.Default != "" {
+		if sv, ok := srv.Variables[name]; ok && sv != nil {
 			resolved = strings.ReplaceAll(resolved, placeholder, sv.Default)
 			continue
 		}
