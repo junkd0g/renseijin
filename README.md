@@ -43,16 +43,17 @@ Design intent:
 | Public API stability              | unstable     |
 | OpenAPI 3.0.x parsing             | works        |
 | OpenAPI 3.1 parsing               | works (basic shapes; not exhaustively tested) |
-| Path / query / header / cookie params | works    |
+| Path / query / header / cookie params | scalars and flat arrays/objects with supported OpenAPI styles; unsupported encodings fail explicitly |
+| Input validation                  | generated JSON Schema is compiled at registration and enforced before HTTP dispatch; recursive schemas use local references |
 | `application/json` request bodies | works        |
-| `application/x-www-form-urlencoded` | works (body must be a JSON object) |
+| `application/x-www-form-urlencoded` | works with default form serialization (body must be a JSON object; arrays become repeated fields) |
 | `multipart/form-data`             | works for text fields + base64-encoded file uploads (`{filename, content_base64}`) |
 | Non-JSON / non-form request bodies | partial (sent as JSON-marshaled bytes; only Content-Type is set per spec) |
 | Response handling                 | text content with status line + body (truncated past `WithMaxResponseBytes`, default 64 KiB) |
 | Auth                              | delegated to caller's `*http.Client` |
 | OAuth helpers                     | not provided (by design) |
 | Streaming responses               | not yet      |
-| Server variables (templated `servers[].url`) | works (spec defaults + `WithServerVariables` overrides; unresolved placeholders fail at `Register`) |
+| Server variables (templated `servers[].url`) | works at operation, path, and root levels (spec defaults + `WithServerVariables` overrides; unresolved placeholders fail at `Register`) |
 | Security schemes / `securityRequirements` | inspected for documentation only; not enforced |
 | Response schema validation        | not yet      |
 | Pagination helpers                | not yet      |
@@ -156,7 +157,10 @@ servers:
       version: {default: v1}
 ```
 
-`Register` substitutes the defaults automatically. To target a different
+`Register` selects operation-level servers before path-level servers, then
+root-level servers, using the first non-empty URL in the selected list.
+`WithBaseURL` overrides all three levels. Server-variable defaults are
+substituted automatically. To target a different
 region without editing the spec:
 
 ```go
@@ -172,18 +176,32 @@ every call with a DNS error.
 ### Form-encoded request bodies
 
 `application/x-www-form-urlencoded` operations expect a JSON-object body;
-keys become form fields, values are stringified.
+scalar values become form fields, arrays become repeated fields, and flat
+objects expand into their own fields, following the default `form` style
+with `explode: true`.
 
 `multipart/form-data` operations take the same shape, with one extension:
 any value of the form `{"filename": "...", "content_base64": "..."}`
 becomes a file part. The base64 envelope is needed because tool arguments
-travel as JSON, which has no binary type.
+travel as JSON, which has no binary type. The generated input schema translates
+`type: string, format: binary` properties into this envelope, including array
+items. Arrays of files produce repeated file parts. Both envelope fields are
+required; the filename must be non-empty.
+
+When several request media types are available, registration selects one once:
+`application/json`, then `application/x-www-form-urlencoded`, then
+`multipart/form-data`, then the first remaining type in lexical order. The
+advertised schema and HTTP encoder use that same selection.
 
 ### Response truncation
 
 By default the handler folds the first 64 KiB of each response body into
-the tool result, with a `(truncated, N of M bytes shown)` marker on
-overflow. Tune the cap (or disable it with `0`) via `WithMaxResponseBytes`.
+the tool result, with a `(truncated, N bytes shown)` marker on overflow.
+The handler reads at most the cap plus one byte, then closes the response;
+it does not drain the body to determine its total length. Tune the cap
+(or disable it with `0`) via `WithMaxResponseBytes`. Negative limits fail at
+registration. Request timeouts remain the responsibility of the supplied HTTP
+client and the call context.
 
 ### Adding authentication
 
@@ -227,7 +245,10 @@ renseijin.Register(srv, doc,
 
 ### Tool name collisions
 
-When stacking several specs on one server, prefix tool names:
+Within one registration, duplicate generated names cause an error before any
+tools are added. Assign unique `operationId` values when fallback names collide.
+When stacking several specs on one server, use distinct prefixes: the SDK does
+not expose an inventory of tools for checking names already on the server.
 
 ```go
 renseijin.Register(srv, petstoreDoc, renseijin.WithToolNamePrefix("pets_"))
@@ -242,6 +263,7 @@ For each operation, the generated tool's input schema is an object with:
 
 - one property per non-body parameter, named after the parameter
   (`petId`, `limit`, ...). Each is tagged with `x-in: path|query|header|cookie`
+  and `x-name` (the original parameter name)
   so callers introspecting the schema can see where the value goes on the
   wire.
 - a `body` property when the operation declares a request body. The body
@@ -250,15 +272,35 @@ For each operation, the generated tool's input schema is an object with:
 Required parameters land in the top-level `required` array. Required request
 bodies add `"body"` to that array.
 
+If parameters share a name across locations, or a parameter named `body`
+conflicts with a request body, they receive aliases such as `path.id`,
+`query.id`, or `query.body`. If an alias itself conflicts with an original
+parameter name, underscores are appended until it is unique. Read the generated
+schema to obtain the exact names. Ordinary, unambiguous names stay unchanged.
+
+Tool arguments are validated against the advertised schema before any HTTP
+request is sent. Unknown top-level arguments, missing required fields, and
+invalid types or constraints return tool errors. JSON numbers retain their
+original precision, including 64-bit integer IDs. Do not mutate the document
+after registration.
+
+Parameter serialization supports `simple` for paths and headers, `label` and
+`matrix` for paths, and `form` for query strings and cookies. Queries also
+support `spaceDelimited` and `pipeDelimited` arrays with `explode: false`, and
+`deepObject` objects with `explode: true`. Nested arrays/objects in parameters
+return errors. Unsupported styles, content-based parameters, and
+`allowReserved: true` fail at registration.
+
 Example, for `GET /pets/{petId}`:
 
 ```json
 {
   "type": "object",
   "properties": {
-    "petId": { "type": "string", "x-in": "path", "description": "..." }
+    "petId": { "type": "string", "x-in": "path", "x-name": "petId", "description": "..." }
   },
-  "required": ["petId"]
+  "required": ["petId"],
+  "additionalProperties": false
 }
 ```
 
@@ -274,6 +316,7 @@ operation.go   -- spec walk, parameter merging, name derivation
 schema.go      -- *openapi3.SchemaRef → map[string]any JSON Schema
 handler.go     -- mcp.ToolHandler → outbound *http.Request, body encoding,
                    response truncation
+parameters.go  -- OpenAPI parameter styles and serialization
 register.go    -- public Register entry point, server-variable resolution
 serve.go       -- Serve convenience helper (NewServer + Register + Run)
 *_test.go      -- per-source white/black-box tests (testify)

@@ -287,7 +287,7 @@ func TestMakeHandler_InvalidJSONArgsErrorsCleanly(t *testing.T) {
 	assert.Contains(t, textOf(t, res), "invalid JSON arguments")
 }
 
-func TestMakeHandler_NoArguments_StillRunsForOperationsWithoutRequiredParams(t *testing.T) {
+func TestMakeHandler_MissingRequiredBodyRejectedBeforeHTTP(t *testing.T) {
 	var hit bool
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hit = true
@@ -303,12 +303,8 @@ func TestMakeHandler_NoArguments_StillRunsForOperationsWithoutRequiredParams(t *
 		Params: &mcp.CallToolParamsRaw{Arguments: nil},
 	})
 	require.NoError(t, err)
-	// createPet's body is required at the parameter-validation layer of
-	// buildInputSchema, but the handler treats a missing body as "no body
-	// sent" and still issues the request (the backend may then reject).
-	// We just need the backend to have been called — i.e. no error path.
-	assert.False(t, res.IsError)
-	assert.True(t, hit)
+	assert.True(t, res.IsError)
+	assert.False(t, hit)
 }
 
 type erroringTransport struct{ err error }
@@ -364,22 +360,6 @@ func (a *authTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return a.base.RoundTrip(r)
 }
 
-// ---- truncateBody -----------------------------------------------------
-
-func TestTruncateBody_NoCapPassesThrough(t *testing.T) {
-	assert.Equal(t, "hello world", truncateBody([]byte("hello world"), 0))
-}
-
-func TestTruncateBody_UnderCapPassesThrough(t *testing.T) {
-	assert.Equal(t, "hello", truncateBody([]byte("hello"), 100))
-}
-
-func TestTruncateBody_OverCapIsCutAndMarked(t *testing.T) {
-	got := truncateBody([]byte("0123456789"), 4)
-	assert.True(t, strings.HasPrefix(got, "0123"))
-	assert.Contains(t, got, "truncated, 4 of 10 bytes shown")
-}
-
 func TestMakeHandler_TruncatesLargeResponse(t *testing.T) {
 	// A backend that returns 2000 bytes of 'A' — the handler should cap the
 	// body it surfaces to the LLM at 100 bytes and stamp a truncation marker.
@@ -394,7 +374,7 @@ func TestMakeHandler_TruncatesLargeResponse(t *testing.T) {
 
 	res := callRaw(t, h, map[string]any{"petId": "1"})
 	text := textOf(t, res)
-	assert.Contains(t, text, "truncated, 100 of 2000 bytes shown")
+	assert.Contains(t, text, "truncated, 100 bytes shown")
 	assert.NotContains(t, text, strings.Repeat("A", 200), "truncation must actually drop bytes, not just append a notice")
 }
 
@@ -429,7 +409,7 @@ func TestEncodeRequestBody_FormURLEncoded(t *testing.T) {
 		"name":   "rex",
 		"age":    float64(7), // JSON numbers always decode as float64
 		"vip":    true,
-		"tags":   []any{"a", "b"}, // non-scalar falls through stringify → JSON
+		"tags":   []any{"a", "b"}, // form defaults to explode=true
 		"nilkey": nil,
 	}, "application/x-www-form-urlencoded")
 	require.NoError(t, err)
@@ -441,7 +421,7 @@ func TestEncodeRequestBody_FormURLEncoded(t *testing.T) {
 	assert.Equal(t, "rex", q.Get("name"))
 	assert.Equal(t, "7", q.Get("age"))
 	assert.Equal(t, "true", q.Get("vip"))
-	assert.Equal(t, `["a","b"]`, q.Get("tags"))
+	assert.Equal(t, []string{"a", "b"}, q["tags"])
 	assert.Equal(t, "", q.Get("nilkey"))
 }
 

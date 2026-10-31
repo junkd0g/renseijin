@@ -10,7 +10,7 @@ type Option func(*config)
 
 type config struct {
 	httpClient *http.Client
-	baseURL    string // overrides the spec's first server URL when non-empty
+	baseURL    string // overrides all spec server URLs when non-empty
 	namePrefix string
 
 	// serverVariables override values for {var} placeholders found in the
@@ -18,10 +18,8 @@ type config struct {
 	// ServerVariable.Default declared in the spec.
 	serverVariables map[string]string
 
-	// maxResponseBytes caps how much of an upstream response body is folded
-	// into the tool result. Bodies larger than this are truncated with a
-	// trailing "(truncated, N of M bytes shown)" marker so the model knows
-	// it's looking at a partial view rather than the whole payload.
+	// maxResponseBytes caps both response reads (plus one overflow byte) and
+	// the body folded into the result. Overflow adds a truncation marker.
 	//
 	// 0 disables truncation entirely.
 	maxResponseBytes int
@@ -87,9 +85,9 @@ func WithServerVariables(vars map[string]string) Option {
 	}
 }
 
-// WithMaxResponseBytes caps the upstream response body folded into the tool
-// result. Pass 0 to disable truncation. See [DefaultMaxResponseBytes] for the
-// out-of-the-box value.
+// WithMaxResponseBytes caps response reads at n+1 bytes and includes at most n
+// body bytes in the tool result. Pass 0 to disable the cap. Negative values
+// fail at Register. See [DefaultMaxResponseBytes] for the default.
 func WithMaxResponseBytes(n int) Option {
 	return func(cfg *config) { cfg.maxResponseBytes = n }
 }

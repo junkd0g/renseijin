@@ -26,12 +26,31 @@ import (
 func makeHandler(op operation, baseURL string, cfg *config) mcp.ToolHandler {
 	client := cfg.httpClient
 	maxBytes := cfg.maxResponseBytes
+	validator := op.inputValidator
+	var schemaErr error
+	if validator == nil {
+		validator, schemaErr = compileInputSchema(buildInputSchema(op))
+	}
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if schemaErr != nil {
+			return errResult(fmt.Errorf("invalid input schema: %w", schemaErr)), nil
+		}
 		args := map[string]any{}
 		if raw := req.Params.Arguments; len(raw) > 0 {
-			if err := json.Unmarshal(raw, &args); err != nil {
+			decoder := json.NewDecoder(bytes.NewReader(raw))
+			decoder.UseNumber()
+			if err := decoder.Decode(&args); err != nil {
 				return errResult(fmt.Errorf("invalid JSON arguments: %w", err)), nil
 			}
+			if err := decoder.Decode(new(any)); err != io.EOF {
+				return errResult(fmt.Errorf("invalid JSON arguments: expected a single object")), nil
+			}
+		}
+		if args == nil {
+			return errResult(fmt.Errorf("arguments must be an object")), nil
+		}
+		if err := validator.Validate(args); err != nil {
+			return errResult(fmt.Errorf("invalid arguments: %w", err)), nil
 		}
 
 		httpReq, err := buildHTTPRequest(ctx, op, baseURL, args)
@@ -45,12 +64,12 @@ func makeHandler(op operation, baseURL string, cfg *config) mcp.ToolHandler {
 		}
 		defer func() { _ = resp.Body.Close() }()
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body, maxBytes)
 		if err != nil {
 			return errResult(fmt.Errorf("read body: %w", err)), nil
 		}
 
-		text := fmt.Sprintf("HTTP %d %s\n%s", resp.StatusCode, resp.Status, truncateBody(body, maxBytes))
+		text := fmt.Sprintf("HTTP %d %s\n%s", resp.StatusCode, http.StatusText(resp.StatusCode), body)
 		result := &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: text}},
 		}
@@ -61,21 +80,39 @@ func makeHandler(op operation, baseURL string, cfg *config) mcp.ToolHandler {
 	}
 }
 
+// Read no more than max bytes plus one overflow probe. The total length of a
+// truncated stream is intentionally unknown; draining it would defeat the cap.
+func readResponseBody(r io.Reader, max int) (string, error) {
+	if max == 0 {
+		body, err := io.ReadAll(r)
+		return string(body), err
+	}
+	if max < 0 {
+		return "", fmt.Errorf("max response bytes must be non-negative")
+	}
+	body, err := io.ReadAll(io.LimitReader(r, int64(max)))
+	if err != nil {
+		return "", err
+	}
+	if len(body) < max {
+		return string(body), nil
+	}
+	var probe [1]byte
+	n, err := io.ReadFull(r, probe[:])
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	if n > 0 {
+		return string(body) + fmt.Sprintf("\n... (truncated, %d bytes shown)", max), nil
+	}
+	return string(body), nil
+}
+
 func errResult(err error) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		IsError: true,
 		Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
 	}
-}
-
-// truncateBody returns body as a string, capped at max bytes. When the cap
-// trips, a trailing line tells the model it's looking at a partial view so
-// it doesn't silently try to parse a half-JSON document.
-func truncateBody(body []byte, max int) string {
-	if max <= 0 || len(body) <= max {
-		return string(body)
-	}
-	return string(body[:max]) + fmt.Sprintf("\n... (truncated, %d of %d bytes shown)", max, len(body))
 }
 
 // buildHTTPRequest assembles the outbound *http.Request from the operation,
@@ -85,29 +122,22 @@ func buildHTTPRequest(ctx context.Context, op operation, baseURL string, args ma
 	query := url.Values{}
 	header := http.Header{}
 	cookies := []*http.Cookie{}
+	names := op.parameterNames()
 
 	for _, pref := range op.parameters {
 		if pref == nil || pref.Value == nil {
 			continue
 		}
 		p := pref.Value
-		raw, present := args[p.Name]
+		raw, present := args[names[p]]
 		if !present {
 			if p.Required {
 				return nil, fmt.Errorf("missing required parameter %q", p.Name)
 			}
 			continue
 		}
-		val := stringify(raw)
-		switch p.In {
-		case openapi3.ParameterInPath:
-			pathTmpl = strings.ReplaceAll(pathTmpl, "{"+p.Name+"}", url.PathEscape(val))
-		case openapi3.ParameterInQuery:
-			query.Set(p.Name, val)
-		case openapi3.ParameterInHeader:
-			header.Set(p.Name, val)
-		case openapi3.ParameterInCookie:
-			cookies = append(cookies, &http.Cookie{Name: p.Name, Value: val})
+		if err := serializeParameter(p, raw, &pathTmpl, query, header, &cookies); err != nil {
+			return nil, err
 		}
 	}
 
@@ -121,11 +151,17 @@ func buildHTTPRequest(ctx context.Context, op operation, baseURL string, args ma
 
 	var body io.Reader
 	contentType := ""
-	if rb, ok := args["body"]; ok && op.op.RequestBody != nil && op.op.RequestBody.Value != nil {
-		mediaType := pickRequestContentType(op.op.RequestBody.Value)
-		body, contentType, err = encodeRequestBody(rb, mediaType)
-		if err != nil {
-			return nil, err
+	if op.op.RequestBody != nil && op.op.RequestBody.Value != nil {
+		rb, present := args["body"]
+		if !present && op.op.RequestBody.Value.Required {
+			return nil, fmt.Errorf("missing required body")
+		}
+		if present {
+			mediaType := op.requestContentType()
+			body, contentType, err = encodeRequestBody(rb, mediaType)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -157,7 +193,7 @@ func buildHTTPRequest(ctx context.Context, op operation, baseURL string, args ma
 //   - application/json (and the * fallback): JSON-marshal whatever the model
 //     sent. Numbers stay numbers, nesting is preserved.
 //   - application/x-www-form-urlencoded: the body must be a JSON object;
-//     keys become form fields, values are stringified.
+//     fields use the default form style with explode=true.
 //   - multipart/form-data: the body must be a JSON object. A value shaped
 //     like {filename, content_base64} becomes a file part; anything else
 //     becomes a plain field. We use base64 because tool arguments travel as
@@ -175,7 +211,11 @@ func encodeRequestBody(rb any, mediaType string) (io.Reader, string, error) {
 		}
 		vals := url.Values{}
 		for k, v := range obj {
-			vals.Set(k, stringify(v))
+			path := ""
+			cookies := []*http.Cookie{}
+			if err := serializeParameter(&openapi3.Parameter{Name: k, In: "query"}, v, &path, vals, nil, &cookies); err != nil {
+				return nil, "", err
+			}
 		}
 		return strings.NewReader(vals.Encode()), mediaType, nil
 
@@ -186,8 +226,7 @@ func encodeRequestBody(rb any, mediaType string) (io.Reader, string, error) {
 		}
 		var buf bytes.Buffer
 		mw := multipart.NewWriter(&buf)
-		// Sort keys so the wire bytes are deterministic — easier to test,
-		// nicer for any downstream caching.
+		// Keep field order stable; the MIME boundary remains random.
 		keys := make([]string, 0, len(obj))
 		for k := range obj {
 			keys = append(keys, k)
@@ -216,9 +255,20 @@ func encodeRequestBody(rb any, mediaType string) (io.Reader, string, error) {
 // (when the value is a {filename, content_base64} object) or a plain text
 // field. See encodeRequestBody for the encoding contract.
 func writeMultipartField(mw *multipart.Writer, name string, v any) error {
+	if items, ok := v.([]any); ok {
+		for _, item := range items {
+			if err := writeMultipartField(mw, name, item); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if obj, ok := v.(map[string]any); ok {
 		if fn, ok := obj["filename"].(string); ok && fn != "" {
-			enc, _ := obj["content_base64"].(string)
+			enc, ok := obj["content_base64"].(string)
+			if !ok {
+				return fmt.Errorf("multipart field %q: content_base64 must be a string", name)
+			}
 			raw, err := base64.StdEncoding.DecodeString(enc)
 			if err != nil {
 				return fmt.Errorf("multipart field %q: invalid content_base64: %w", name, err)
@@ -242,9 +292,11 @@ func stringify(v any) string {
 	switch x := v.(type) {
 	case string:
 		return x
+	case json.Number:
+		return string(x)
 	case float64:
-		// json.Unmarshal into map[string]any yields float64 for all numbers;
-		// strip trailing ".0" so /pets/{petId} doesn't become /pets/42.
+		// Support Go callers of the internal encoder as well as json.Number
+		// values from tool arguments. Integral floats have no trailing ".0".
 		if x == float64(int64(x)) {
 			return fmt.Sprintf("%d", int64(x))
 		}
@@ -266,11 +318,20 @@ func pickRequestContentType(rb *openapi3.RequestBody) string {
 	if rb == nil || rb.Content == nil {
 		return "application/json"
 	}
-	if _, ok := rb.Content["application/json"]; ok {
-		return "application/json"
+	for _, name := range []string{"application/json", "application/x-www-form-urlencoded", "multipart/form-data"} {
+		if mt := rb.Content[name]; mt != nil {
+			return name
+		}
 	}
-	for name := range rb.Content {
-		return name
+	var names []string
+	for name, mt := range rb.Content {
+		if mt != nil {
+			names = append(names, name)
+		}
+	}
+	if len(names) > 0 {
+		sort.Strings(names)
+		return names[0]
 	}
 	return "application/json"
 }

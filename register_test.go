@@ -2,6 +2,7 @@ package renseijin_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -39,7 +40,9 @@ func connectClient(t *testing.T, srv *mcp.Server) *mcp.ClientSession {
 	go func() { serverDone <- srv.Run(ctx, serverT) }()
 	t.Cleanup(func() {
 		cancel()
-		<-serverDone
+		if err := <-serverDone; err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("server shutdown: %v", err)
+		}
 	})
 
 	cli := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.0.0"}, nil)
